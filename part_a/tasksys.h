@@ -1,6 +1,8 @@
 #ifndef _TASKSYS_H
 #define _TASKSYS_H
 
+#include <thread>
+#include <atomic>
 #include "itasksys.h"
 
 /*
@@ -50,6 +52,11 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         void run(IRunnable* runnable, int num_total_tasks);
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
+        std::vector<std::thread> Workers;
+        std::deque<std::tuple<int,int,IRunnable*>> Tasks;
+        std::mutex get_queue_task;
+        bool shutdown = false;
+        std::atomic<int> completed_tasks{0};
         void sync();
 };
 
