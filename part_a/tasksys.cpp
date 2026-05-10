@@ -1,9 +1,11 @@
+#include <cstdio>
 #include <mutex>
 #include <thread>
 #include <vector>
 #include <deque>
 #include <tuple>
 #include <utility>
+#include <condition_variable>
 #include "tasksys.h"
 #include "itasksys.h"
 
@@ -209,6 +211,53 @@ const char* TaskSystemParallelThreadPoolSleeping::name() {
     return "Parallel + Thread Pool + Sleep";
 }
 
+void thread_fun_spin_old(std::condition_variable &cv,std::deque<std::tuple<int,int,IRunnable*>> &Tasks,std::mutex &get_queue_task,bool &shutdown,std::atomic<int>& completed_tasks){
+    while(!shutdown){
+        std::unique_lock<std::mutex> lock(get_queue_task);
+        cv.wait(lock);
+        // if(Tasks.size() == 0) {
+        //     lock.unlock();
+        //     continue;
+        // }
+        auto q_back = Tasks.back();
+        int num_total_tasks = std::get<0>(q_back);
+        IRunnable * task = std::get<2>(q_back);
+        int task_id = std::get<1>(q_back);
+        Tasks.pop_back();
+        lock.unlock();
+        task->runTask(task_id, num_total_tasks);
+        completed_tasks++;
+        printf("task id: %d, completed task: %d\n",task_id,(int)completed_tasks);
+
+    }
+}
+
+void thread_fun_spin(std::condition_variable &cv,
+                     std::deque<std::tuple<int,int,IRunnable*>> &Tasks,
+                     std::mutex &m,
+                     std::atomic<bool>  &shutdown,
+                     std::atomic<int>& completed_tasks) {
+
+    while (true) {
+        std::unique_lock<std::mutex> lock(m);
+
+        cv.wait(lock, [&] {
+            return shutdown || !Tasks.empty();
+        });
+
+        if (shutdown && Tasks.empty())
+            return;
+
+        auto [num_total_tasks, task_id, task] = Tasks.front();
+        Tasks.pop_front();
+
+        lock.unlock();
+
+        task->runTask(task_id, num_total_tasks);
+        completed_tasks++;
+    }
+}
+
 TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads) {
     //
     // TODO: CS149 student implementations may decide to perform setup
@@ -216,6 +265,14 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+
+    this->Workers = std::vector<std::thread>(num_threads);
+    this->Tasks = std::deque<std::tuple<int,int,IRunnable*>>();
+    for(int i=0;i<num_threads;i++){
+        this->Workers[i] = std::thread(thread_fun_spin,ref(cv),ref(Tasks),ref(m),std::ref(shutdown),std::ref(completed_tasks));
+    }
+
+
 }
 
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
@@ -225,6 +282,11 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+    shutdown = true;
+    cv.notify_all();
+    for(int i=0;i<Workers.size();i++){
+        this->Workers[i].join();
+    }
 }
 
 void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_total_tasks) {
@@ -236,9 +298,21 @@ void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_tota
     // tasks sequentially on the calling thread.
     //
 
-    for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
+    completed_tasks = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(m);
+        for (int i = 0; i < num_total_tasks; i++) {
+            Tasks.push_back({num_total_tasks, i, runnable});
+        }
     }
+
+    cv.notify_all();
+
+    while (completed_tasks < num_total_tasks) {
+        std::this_thread::yield();  
+    }
+    
 }
 
 TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
