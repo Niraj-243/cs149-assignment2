@@ -61,7 +61,7 @@ typedef struct {
  * Implement your task here
 */
 class YourTask : public IRunnable {
-    public:
+    public: 
         YourTask() {}
         ~YourTask() {}
         void runTask(int task_id, int num_total_tasks) {}
